@@ -1,10 +1,10 @@
-# Mood Transfer
+# ColourMorph
 
-Mood Transfer applies the visual style of one image to the content of another. You give it a **content image** (the scene, objects or people to keep) and a **style image** (the colours, textures and brush-like patterns to borrow). It produces a new image that keeps the structure of the first and takes on the look of the second.
+ColourMorph applies the visual style of one image to the content of another. You give it a **content image** (the scene, objects or people to keep) and a **style image** (the colours, textures and brush-like patterns to borrow). It produces a new image that keeps the structure of the first and takes on the look of the second.
 
 The project uses **Neural Style Transfer** (Gatys et al., 2015). A pretrained VGG19 network serves as a fixed feature extractor. Its weights never change. Only the pixels of the generated image are optimized.
 
-> In this project, "mood" means the visual atmosphere created by colour, texture and artistic appearance. The system does not detect or change anyone's emotional state.
+> ColourMorph transfers visual appearance only: colour, texture and artistic style. It does not detect or change anyone's emotional state.
 
 **Team:** Zahra · Muneeb · Hadi
 
@@ -37,7 +37,7 @@ The project uses **Neural Style Transfer** (Gatys et al., 2015). A pretrained VG
 ## Project structure
 
 ```
-MoodTransfer/
+ColourMorph/
 ├── app.py                    # Streamlit interface (Zahra)
 ├── preprocessing.py          # image loading, resizing, normalization (Zahra)
 ├── feature_extraction.py     # VGG19 loading, feature extraction, Gram matrix (Muneeb)
@@ -71,7 +71,7 @@ Requires Python 3.9 or newer.
 
 ```bash
 git clone <repo-url>
-cd MoodTransfer
+cd ColourMorph
 pip install -r requirements.txt
 ```
 
