@@ -58,10 +58,11 @@ ColourMorph/
 
 | Module | Owner | Status |
 | --- | --- | --- |
-| `preprocessing.py`, `app.py` | Zahra | In progress |
-| `feature_extraction.py` | Muneeb | In progress |
-| `style_transfer.py`, `test_style_transfer.py` | Hadi | Done, tests pass with a stand-in extractor |
-| Integration and evaluation | Everyone | 11–14 November |
+| `preprocessing.py` | Zahra | Done |
+| `app.py` | Zahra | Done |
+| `feature_extraction.py` | Muneeb | Done |
+| `style_transfer.py`, `test_style_transfer.py` | Hadi | Done |
+| Integration and evaluation | Everyone | Team task, 11–14 November |
 
 ---
 
