@@ -1,4 +1,5 @@
 import io
+from pathlib import Path
 
 import streamlit as st
 import torch
@@ -6,7 +7,10 @@ from PIL import Image
 
 from feature_extraction import load_feature_extractor
 from preprocessing import denormalize_image, preprocess_image
-from style_transfer import transfer_style
+from style_transfer import PILOT_IMAGE_SIZE, transfer_style, load_decoder
+
+ROOT = Path(__file__).resolve().parent
+CHECKPOINT = ROOT / "checkpoints" / "best_decoder.pth"
 
 st.set_page_config(page_title="ColourMorph", layout="wide")
 st.title("ColourMorph")
@@ -18,8 +22,10 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 @st.cache_resource
-def get_model(device):
-    return load_feature_extractor(device=device)
+def get_models(device, checkpoint_path):
+    extractor = load_feature_extractor(device=device)
+    decoder = load_decoder(checkpoint_path, device=device)
+    return extractor, decoder
 
 
 def open_upload(uploaded):
@@ -36,33 +42,38 @@ with style_col:
     if style_file is not None:
         st.image(open_upload(style_file), caption="Style preview", width="stretch")
 
-steps = st.slider("Steps", min_value=1, max_value=500, value=300)
-generate = st.button("Generate", disabled=content_file is None or style_file is None)
+alpha = st.slider("Style strength", min_value=0.0, max_value=1.0, value=1.0, step=0.05)
+generate = st.button(
+    "Generate",
+    disabled=content_file is None or style_file is None or not CHECKPOINT.is_file(),
+)
+
+if not CHECKPOINT.is_file():
+    st.error(
+        "No trained decoder at checkpoints/best_decoder.pth. "
+        "Train one with python train.py after placing images in data/content/train and data/style/train."
+    )
 
 if "result_png" not in st.session_state:
     st.session_state.result_png = None
 
 if generate:
-    progress = st.progress(0, text="Starting")
-
-    def on_step(step, total_steps, loss):
-        progress.progress(step / total_steps, text=f"Step {step}/{total_steps}")
-
     try:
-        content = preprocess_image(open_upload(content_file), device=DEVICE)
-        style = preprocess_image(open_upload(style_file), device=DEVICE)
-        model = get_model(DEVICE)
+        content = preprocess_image(open_upload(content_file), image_size=PILOT_IMAGE_SIZE, device=DEVICE)
+        style = preprocess_image(open_upload(style_file), image_size=PILOT_IMAGE_SIZE, device=DEVICE)
+        extractor, decoder = get_models(DEVICE, str(CHECKPOINT))
         output = transfer_style(
             content,
             style,
-            model,
-            {"steps": steps, "callback": on_step},
+            alpha=alpha,
+            feature_extractor=extractor,
+            decoder=decoder,
+            device=DEVICE,
         )
         result = denormalize_image(output)
         buffer = io.BytesIO()
         result.save(buffer, format="PNG")
         st.session_state.result_png = buffer.getvalue()
-        progress.progress(1.0, text=f"Step {steps}/{steps}")
     except Exception as exc:
         st.session_state.result_png = None
         st.error(f"Could not generate the image: {exc}")

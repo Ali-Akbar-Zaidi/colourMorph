@@ -1,139 +1,118 @@
-import sys
-import types
+import tempfile
+from pathlib import Path
 
 import torch
-import torch.nn as nn
-from torchvision.models import vgg19
+from PIL import Image
+
+from adain import adaptive_instance_norm, mean_std
+from dataset import StyleTransferDataset
+from feature_extraction import CONTENT_LAYER, STYLE_LAYERS, load_feature_extractor
+from losses import content_loss, style_loss, total_loss
+from model import Decoder
+from preprocessing import IMAGENET_MEAN, IMAGENET_STD, preprocess_image
+from style_transfer import transfer_style
+from train import training_step
 
 
-# uses Muneeb's feature_extraction.py if it's there, otherwise a stand-in
-# that returns the same dictionary format (random VGG19 weights, no download)
-LAYER_INDICES = {
-    "conv1_1": 0,
-    "conv2_1": 5,
-    "conv3_1": 10,
-    "conv4_1": 19,
-    "conv4_2": 21,
-    "conv5_1": 28,
-}
+def make_image(seed, size=128):
+    generator = torch.Generator().manual_seed(seed)
+    rgb = torch.rand(1, 3, size, size, generator=generator)
+    mean = torch.tensor(IMAGENET_MEAN).view(1, 3, 1, 1)
+    std = torch.tensor(IMAGENET_STD).view(1, 3, 1, 1)
+    return (rgb - mean) / std
 
 
-def stub_load_feature_extractor(device=None):
-    model = vgg19(weights=None).features[:29]
-    for i, layer in enumerate(model):
-        if isinstance(layer, nn.ReLU):
-            model[i] = nn.ReLU(inplace=False)
-    model.eval()
-    for param in model.parameters():
-        param.requires_grad_(False)
-    if device is not None:
-        model = model.to(device)
-    return model
+def test_adain_matches_style_statistics():
+    torch.manual_seed(0)
+    content = torch.randn(2, 8, 6, 6)
+    style = torch.randn(2, 8, 6, 6) * 0.4 - 1.5
+    transformed = adaptive_instance_norm(content, style, alpha=1.0)
+    got_mean, got_std = mean_std(transformed)
+    style_mean, style_std = mean_std(style)
+    assert torch.allclose(got_mean, style_mean, atol=1e-4)
+    assert torch.allclose(got_std, style_std, atol=1e-4)
+
+    unchanged = adaptive_instance_norm(content, style, alpha=0.0)
+    assert torch.equal(unchanged, content)
 
 
-def stub_extract_features(image_tensor, model):
-    names = {index: name for name, index in LAYER_INDICES.items()}
+def test_decoder_output_shape():
+    decoder = Decoder()
+    output = decoder(torch.randn(2, 512, 16, 16))
+    assert output.shape == (2, 3, 128, 128)
+    assert output.requires_grad
+
+
+def test_losses_use_weights():
     features = {}
-    x = image_tensor
-    for i, layer in enumerate(model):
-        x = layer(x)
-        if i in names:
-            features[names[i]] = x
-    return features
+    for layer, channels in zip(STYLE_LAYERS, (64, 128, 256, 512)):
+        features[layer] = torch.randn(2, channels, 4, 4)
+    assert content_loss(features, features[CONTENT_LAYER]).item() == 0
+    assert style_loss(features, features).item() == 0
+    assert total_loss(torch.tensor(2.0), torch.tensor(3.0), 10.0).item() == 32.0
 
 
-def stub_gram_matrix(feature_tensor):
-    b, c, h, w = feature_tensor.shape
-    flat = feature_tensor.view(b * c, h * w)
-    return flat @ flat.t() / (c * h * w)
+def test_decoder_learns_and_vgg_stays_fixed():
+    extractor = load_feature_extractor()
+    vgg_before = [param.clone() for param in extractor.parameters()]
+    decoder = Decoder()
+    decoder_before = [param.clone() for param in decoder.parameters()]
+    optimizer = torch.optim.Adam(decoder.parameters(), lr=1e-4)
+    training_step(decoder, extractor, optimizer, make_image(0), make_image(1), 10.0)
 
-
-try:
-    import feature_extraction
-    USING_STUB = False
-except ImportError:
-    feature_extraction = types.ModuleType("feature_extraction")
-    feature_extraction.load_feature_extractor = stub_load_feature_extractor
-    feature_extraction.extract_features = stub_extract_features
-    feature_extraction.gram_matrix = stub_gram_matrix
-    sys.modules["feature_extraction"] = feature_extraction
-    USING_STUB = True
-
-import style_transfer
-from style_transfer import content_loss, style_loss, total_loss, transfer_style, get_pixel_limits
-
-
-def make_image(seed):
-    torch.manual_seed(seed)
-    low, high = get_pixel_limits("cpu")
-    return low + torch.rand(1, 3, 256, 256) * (high - low)
-
-
-def test_losses_are_zero_for_same_features():
-    model = feature_extraction.load_feature_extractor()
-    image = make_image(0)
-    features = feature_extraction.extract_features(image, model)
-    grams = {layer: feature_extraction.gram_matrix(features[layer]) for layer in style_transfer.STYLE_LAYERS}
-
-    assert content_loss(features, features).item() == 0
-    assert style_loss(features, grams, style_transfer.STYLE_LAYERS).item() == 0
-
-
-def test_losses_are_positive_for_different_images():
-    model = feature_extraction.load_feature_extractor()
-    a = feature_extraction.extract_features(make_image(0), model)
-    b = feature_extraction.extract_features(make_image(1), model)
-    grams_b = {layer: feature_extraction.gram_matrix(b[layer]) for layer in style_transfer.STYLE_LAYERS}
-
-    assert content_loss(a, b).item() > 0
-    assert style_loss(a, grams_b, style_transfer.STYLE_LAYERS).item() > 0
-
-
-def test_total_loss_uses_weights():
-    c = torch.tensor(2.0)
-    s = torch.tensor(3.0)
-    assert total_loss(c, s, 1.0, 10.0).item() == 32.0
+    for before, after in zip(vgg_before, extractor.parameters()):
+        assert torch.equal(before, after)
+    assert any(
+        not torch.equal(before, after)
+        for before, after in zip(decoder_before, decoder.parameters())
+    )
 
 
 def test_transfer_style_output():
-    model = feature_extraction.load_feature_extractor()
-    content = make_image(0)
-    style = make_image(1)
-    content_before = content.clone()
-    style_before = style.clone()
-
-    losses = []
-    config = {"steps": 15, "log_every": 0, "callback": lambda step, total, loss: losses.append(loss)}
-    output = transfer_style(content, style, model, config)
-
-    low, high = get_pixel_limits("cpu")
-    assert output.shape == (1, 3, 256, 256)
-    assert output.device == content.device
+    extractor = load_feature_extractor()
+    decoder = Decoder()
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / "best_decoder.pth"
+        torch.save(decoder.state_dict(), path)
+        output = transfer_style(
+            make_image(0),
+            make_image(1),
+            alpha=0.5,
+            checkpoint_path=path,
+            feature_extractor=extractor,
+        )
+    assert output.shape == (1, 3, 128, 128)
     assert output.dtype == torch.float32
     assert not output.requires_grad
     assert torch.isfinite(output).all()
-    assert (output >= low - 1e-5).all() and (output <= high + 1e-5).all()
-    assert torch.equal(content, content_before) and torch.equal(style, style_before)
-    assert len(losses) == 15
-    assert losses[-1] < losses[0]
 
 
-def test_model_weights_stay_fixed():
-    model = feature_extraction.load_feature_extractor()
-    weights_before = [p.clone() for p in model.parameters()]
-    transfer_style(make_image(0), make_image(1), model, {"steps": 3, "log_every": 0})
-    for before, after in zip(weights_before, model.parameters()):
-        assert torch.equal(before, after)
+def test_dataset_reads_unpaired_folders():
+    with tempfile.TemporaryDirectory() as folder:
+        root = Path(folder)
+        content = root / "content"
+        style = root / "style"
+        content.mkdir()
+        style.mkdir()
+        Image.new("RGB", (40, 30), (255, 0, 0)).save(content / "a.jpg")
+        Image.new("RGB", (20, 50), (0, 0, 255)).save(content / "b.png")
+        Image.new("RGB", (33, 33), (0, 255, 0)).save(style / "paint.jpg")
+        dataset = StyleTransferDataset(content, style, image_size=128)
+        image, painting = dataset[0]
+        assert image.shape == (3, 128, 128)
+        assert painting.shape == (3, 128, 128)
+        roundtrip = preprocess_image(Image.open(content / "a.jpg"), image_size=128).squeeze(0)
+        assert torch.allclose(dataset[0][0], roundtrip, atol=1e-5)
 
 
 if __name__ == "__main__":
-    print("using stand-in feature extractor" if USING_STUB else "using feature_extraction.py")
     tests = [
-        test_losses_are_zero_for_same_features,
-        test_losses_are_positive_for_different_images,
-        test_total_loss_uses_weights,
+        test_adain_matches_style_statistics,
+        test_decoder_output_shape,
+        test_losses_use_weights,
+        test_decoder_learns_and_vgg_stays_fixed,
         test_transfer_style_output,
-        test_model_weights_stay_fixed,
+        test_dataset_reads_unpaired_folders,
     ]
     for test in tests:
         test()

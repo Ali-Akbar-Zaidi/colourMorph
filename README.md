@@ -2,7 +2,7 @@
 
 ColourMorph applies the visual style of one image to the content of another. You give it a **content image** (the scene, objects or people to keep) and a **style image** (the colours, textures and brush-like patterns to borrow). It produces a new image that keeps the structure of the first and takes on the look of the second.
 
-The project uses **Neural Style Transfer** (Gatys et al., 2015). A pretrained VGG19 network serves as a fixed feature extractor. Its weights never change. Only the pixels of the generated image are optimized.
+The project uses adaptive instance normalization (Huang and Belongie, 2017). A frozen pretrained VGG19 encoder reads both images. A custom decoder, trained by the group, turns the transformed features into an RGB image in one forward pass. VGG19's weights never change.
 
 > ColourMorph transfers visual appearance only: colour, texture and artistic style. It does not detect or change anyone's emotional state.
 
@@ -13,24 +13,19 @@ The project uses **Neural Style Transfer** (Gatys et al., 2015). A pretrained VG
 ## How it works
 
 ```
- content image ─┐                                  ┌─> generated tensor ─> RGB image ─> preview / download
-                ├─> preprocessing ─> style transfer ┤
- style image ───┘      (Zahra)          (Hadi)      │
-                                          ▲         │
-                                          │         │
-                              VGG19 features + Gram matrices
-                                       (Muneeb)
+ content photo ──► frozen VGG19 ──► relu4_1 ──┐
+                                              ├─► AdaIN ──► trained decoder ──► RGB image
+ style painting ─► frozen VGG19 ──► relu4_1 ──┘
 ```
 
-1. **Preprocess.** Both images are converted to RGB, resized to 256 × 256, turned into tensors of shape `[1, 3, 256, 256]` and normalized with ImageNet mean and std.
-2. **Extract features.** VGG19 returns activations from the content layer (`conv4_2`) and the style layers (`conv1_1`, `conv2_1`, `conv3_1`, `conv4_1`, `conv5_1`).
-3. **Represent style.** A Gram matrix of each style layer captures how its feature channels correlate. This describes texture and colour while ignoring where things are in the image.
-4. **Compute the losses.**
-   - Content loss: MSE between the `conv4_2` features of the generated and content images.
-   - Style loss: weighted MSE between the Gram matrices of the generated and style images, with weight 0.2 for each of the five layers.
-   - Total loss: `L_total = alpha × L_content + beta × L_style`
-5. **Optimize.** The generated image starts as a copy of the content image. Adam updates its pixels to reduce the total loss. After every step the pixels are clamped so they stay in the valid 0 to 1 range once denormalized.
-6. **Display and save.** The final tensor is converted back to an RGB image, shown in the Streamlit app and offered for download.
+Training happens before the app is used. The app does not run an optimization loop.
+
+1. **Preprocess.** Both images are converted to RGB, resized to 128 × 128 for the pilot, turned into tensors of shape `[1, 3, 128, 128]` and normalized with ImageNet mean and std.
+2. **Extract features.** Frozen VGG19 returns `relu1_1`, `relu2_1`, `relu3_1`, and `relu4_1`. The encoder stops at `relu4_1`.
+3. **AdaIN.** The `relu4_1` content features are shifted and scaled so each channel matches the style features' mean and standard deviation. Style strength `alpha` blends that result with the original content features.
+4. **Decode.** The trained decoder maps the 512-channel feature map back to a 3-channel image of the same height and width.
+5. **Train the decoder only.** Content loss compares `relu4_1` of the generated image with the AdaIN tensor. Style loss compares channel means and standard deviations from `relu1_1` through `relu4_1`. Adam updates the decoder. VGG19 stays frozen.
+6. **Display and save.** The app loads `checkpoints/best_decoder.pth`, shows the result, and offers it for download.
 
 ---
 
@@ -38,15 +33,23 @@ The project uses **Neural Style Transfer** (Gatys et al., 2015). A pretrained VG
 
 ```
 ColourMorph/
-├── app.py                    # Streamlit interface (Zahra)
-├── preprocessing.py          # image loading, resizing, normalization (Zahra)
-├── feature_extraction.py     # VGG19 loading, feature extraction, Gram matrix (Muneeb)
-├── style_transfer.py         # losses and image optimization (Hadi)
-├── test_style_transfer.py    # tests for style_transfer.py (Hadi)
+├── app.py
+├── preprocessing.py
+├── feature_extraction.py
+├── adain.py
+├── model.py
+├── losses.py
+├── dataset.py
+├── train.py
+├── style_transfer.py
+├── test_style_transfer.py
 ├── requirements.txt
-├── sample_images/
+├── checkpoints/
+│   └── best_decoder.pth
+├── data/
 │   ├── content/
 │   └── style/
+├── sample_images/
 ├── outputs/
 ├── notebooks/
 └── README.md
@@ -58,11 +61,10 @@ ColourMorph/
 
 | Module | Owner | Status |
 | --- | --- | --- |
-| `preprocessing.py` | Zahra | Done |
-| `app.py` | Zahra | Done |
-| `feature_extraction.py` | Muneeb | Done |
-| `style_transfer.py`, `test_style_transfer.py` | Hadi | Done |
-| Integration and evaluation | Everyone | Team task, 11–14 November |
+| `preprocessing.py`, `dataset.py`, `app.py` | Zahra | Code done; dataset subsets still needed |
+| `feature_extraction.py`, `adain.py` | Muneeb | Done |
+| `model.py`, `losses.py`, `train.py`, `style_transfer.py` | Hadi | Code done; training run still needed |
+| Pilot training and evaluation | Everyone | 12–15 November |
 
 ---
 
@@ -86,57 +88,45 @@ The main dependencies are `torch`, `torchvision`, `Pillow`, `numpy`, `matplotlib
 
 ### Run the app
 
+Put about 300–500 COCO photographs in `data/content/train` and 300–500 WikiArt paintings in `data/style/train`. Optionally add `data/content/val` and `data/style/val`. Do not commit those images. WikiArt is restricted to non-commercial research use.
+
 ```bash
+python train.py --epochs 5 --batch-size 4
 streamlit run app.py
 ```
 
-Upload a content image and a style image (JPG, JPEG or PNG), generate the result and download it.
+`train.py` saves `checkpoints/best_decoder.pth` and `checkpoints/loss_log.json`. Pass `--drive-dir` on Colab to copy both to Google Drive, and `--resume` to continue from `checkpoints/last.pth`. The app needs the checkpoint file before Generate is enabled.
+
+Upload a content image and a style image (JPG, JPEG or PNG), set the style strength, generate the result, and download it.
 
 ### Use the pipeline from Python
 
 ```python
-import torch
 from PIL import Image
 from preprocessing import preprocess_image, denormalize_image
-from feature_extraction import load_feature_extractor
 from style_transfer import transfer_style
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-
-content = preprocess_image(Image.open("sample_images/content/city.jpg"), device=device)
-style = preprocess_image(Image.open("sample_images/style/starry.jpg"), device=device)
-model = load_feature_extractor(device=device)
-
-output = transfer_style(content, style, model, {"steps": 300})
+content = preprocess_image(Image.open("sample_images/content/city.jpg"), image_size=128)
+style = preprocess_image(Image.open("sample_images/style/starry.jpg"), image_size=128)
+output = transfer_style(content, style, alpha=1.0)
 denormalize_image(output).save("outputs/city_starry.png")
 ```
 
-The image file names are only examples.
-
 ---
 
-## Style transfer settings
+## Training settings
 
-`transfer_style(content_tensor, style_tensor, feature_extractor, config)` takes an optional `config` dictionary. Any key you leave out uses its default value.
+| Setting | Starting value |
+| --- | --- |
+| Image size | 128 × 128 |
+| Batch size | 4 |
+| Optimizer | Adam |
+| Learning rate | 0.0001 |
+| Epochs | 5 |
+| Style loss weight `lambda` | 10 |
+| Trainable parameters | Decoder only |
 
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `alpha` | `1.0` | Weight of the content loss |
-| `beta` | `1e6` | Weight of the style loss |
-| `lr` | `0.02` | Adam learning rate |
-| `steps` | `300` | Number of optimization steps |
-| `style_weights` | `0.2` per layer | Weight of each style layer |
-| `device` | device of `content_tensor` | Where the optimization runs |
-| `log_every` | `50` | Print the losses every N steps (`0` turns printing off) |
-| `callback` | `None` | `callback(step, total_steps, loss)` is called after every step. Useful for a progress bar in the app. |
-
-The function returns a detached, normalized tensor of shape `[1, 3, 256, 256]` on the same device as the input.
-
-**Tuning tips**
-
-- For more style, raise `beta`. For a result closer to the original photo, lower it.
-- More `steps` give a cleaner result but take longer.
-- These defaults are starting values. They will be tuned with real images during evaluation.
+`alpha` in the app is the style strength from 0 to 1. It is not the content-loss weight. `1` uses the full AdaIN features. `0` keeps the content features.
 
 ---
 
@@ -146,13 +136,15 @@ All modules depend on these agreements. Do not change them without telling the t
 
 | Item | Agreement |
 | --- | --- |
-| Image size and shape | 256 × 256, tensor `[1, 3, 256, 256]`, RGB |
-| Normalization | ImageNet mean `[0.485, 0.456, 0.406]`, std `[0.229, 0.224, 0.225]`. It must match in `preprocessing.py` and `style_transfer.py`. |
-| Feature dictionary keys | `conv1_1`, `conv2_1`, `conv3_1`, `conv4_1`, `conv4_2`, `conv5_1` |
-| Gram matrix | Divided by C × H × W. `beta = 1e6` assumes this. Other scaling means `beta` has to be retuned. |
-| Gradients | `extract_features` must not run under `torch.no_grad()`, because the optimization needs gradients through it. |
-| VGG19 ReLU | In-place ReLU must be turned off. Otherwise the stored feature maps get overwritten silently. |
-| Device | CUDA when available, otherwise CPU. Every tensor and the model must be on the same device. |
+| Pilot image size and shape | 128 × 128, tensor `[1, 3, 128, 128]`, RGB |
+| Normalization | ImageNet mean `[0.485, 0.456, 0.406]`, std `[0.229, 0.224, 0.225]` |
+| Feature dictionary keys | `relu1_1`, `relu2_1`, `relu3_1`, `relu4_1` |
+| Encoder | `vgg19.features[:21]`, frozen, in-place ReLU replaced |
+| AdaIN | Per-channel mean and std at `relu4_1`, then blend with `alpha` |
+| Decoder | 512 channels in, 3 channels out, three nearest ×2 upsamples |
+| Loss | `content + 10 * style`. Style uses mean and std, not a Gram matrix |
+| Checkpoint | `checkpoints/best_decoder.pth` is the decoder `state_dict` |
+| Device | CUDA when available, otherwise CPU |
 
 ---
 
@@ -165,37 +157,31 @@ python test_style_transfer.py
 Expected output:
 
 ```
-using stand-in feature extractor
-passed test_losses_are_zero_for_same_features
-passed test_losses_are_positive_for_different_images
-passed test_total_loss_uses_weights
+passed test_adain_matches_style_statistics
+passed test_decoder_output_shape
+passed test_losses_use_weights
+passed test_decoder_learns_and_vgg_stays_fixed
 passed test_transfer_style_output
-passed test_model_weights_stay_fixed
+passed test_dataset_reads_unpaired_folders
 all tests passed
 ```
 
-The tests check that:
-- the losses are zero for identical features and positive for different ones
-- the output has the right shape, dtype and device, with finite values in the valid pixel range
-- the loss goes down during optimization
-- the input tensors and the VGG19 weights are not changed
-
-When `feature_extraction.py` is missing, the tests use a stand-in VGG19 with random weights, so nothing needs to download. Once Muneeb's file is in the folder, the tests use it automatically and the first line changes to `using feature_extraction.py`.
+The tests check AdaIN statistics, the decoder shape, the weighted loss, that a training step updates the decoder and not VGG19, one-pass inference, and the unpaired dataset loader.
 
 ---
 
 ## Limitations
 
-- Every image is generated by optimization, so each one takes many forward and backward passes. It is slow on CPU.
-- The output is fixed at 256 × 256.
-- Results depend a lot on the image pair and on the balance between `alpha` and `beta`.
-- Images are compared on texture and colour only. The method doesn't understand what the objects in them are.
+- The pilot image size is 128 × 128. A checkpoint trained at that size is the one the app loads.
+- A few epochs on a few hundred images demonstrate training. They will not match a full research-scale AdaIN model.
+- The app needs `checkpoints/best_decoder.pth`. An untrained decoder runs, but it does not transfer style.
+- The method matches colour and texture statistics. It does not understand the objects in the picture.
 
 ---
 
 ## References
 
+- X. Huang and S. Belongie, "Arbitrary Style Transfer in Real-Time with Adaptive Instance Normalization," ICCV 2017.
 - L. A. Gatys, A. S. Ecker and M. Bethge, "A Neural Algorithm of Artistic Style," arXiv:1508.06576, 2015.
-- L. A. Gatys, A. S. Ecker and M. Bethge, "Image Style Transfer Using Convolutional Neural Networks," CVPR 2016.
 - K. Simonyan and A. Zisserman, "Very Deep Convolutional Networks for Large-Scale Image Recognition," arXiv:1409.1556, 2014.
 - PyTorch, "Neural Transfer Using PyTorch" tutorial, pytorch.org/tutorials.

@@ -1,29 +1,29 @@
 import torch.nn as nn
 from torchvision.models import VGG19_Weights, vgg19
 
-# Indices in torchvision vgg19.features. Values are the conv outputs at these layers.
+# Indices in torchvision vgg19.features. Values are the ReLU outputs.
 LAYER_INDICES = {
-    "conv1_1": 0,
-    "conv2_1": 5,
-    "conv3_1": 10,
-    "conv4_1": 19,
-    "conv4_2": 21,
-    "conv5_1": 28,
+    "relu1_1": 1,
+    "relu2_1": 6,
+    "relu3_1": 11,
+    "relu4_1": 20,
 }
 
+CONTENT_LAYER = "relu4_1"
+STYLE_LAYERS = ("relu1_1", "relu2_1", "relu3_1", "relu4_1")
+
+# Shapes for one 128×128 RGB image. relu4_1 is the AdaIN input.
 EXPECTED_SHAPES = {
-    "conv1_1": (1, 64, 256, 256),
-    "conv2_1": (1, 128, 128, 128),
-    "conv3_1": (1, 256, 64, 64),
-    "conv4_1": (1, 512, 32, 32),
-    "conv4_2": (1, 512, 32, 32),
-    "conv5_1": (1, 512, 16, 16),
+    "relu1_1": (1, 64, 128, 128),
+    "relu2_1": (1, 128, 64, 64),
+    "relu3_1": (1, 256, 32, 32),
+    "relu4_1": (1, 512, 16, 16),
 }
 
 
 def load_feature_extractor(device=None):
-    """Load pretrained VGG19 features through conv5_1, frozen and in eval mode."""
-    model = vgg19(weights=VGG19_Weights.IMAGENET1K_V1).features[:29]
+    """Load frozen ImageNet VGG19 features through relu4_1."""
+    model = vgg19(weights=VGG19_Weights.IMAGENET1K_V1).features[:21]
     for index, layer in enumerate(model):
         if isinstance(layer, nn.ReLU):
             model[index] = nn.ReLU(inplace=False)
@@ -36,10 +36,11 @@ def load_feature_extractor(device=None):
 
 
 def extract_features(image_tensor, model):
-    """Return activations for the agreed content and style layers.
+    """Return relu1_1, relu2_1, relu3_1, and relu4_1.
 
-    Gradients stay enabled. The style-transfer loop disables them itself
-    when it caches the content and style targets.
+    Gradients stay enabled so training can pass the generated image through
+    VGG19 and update the decoder. Callers disable gradients for the content
+    and style images themselves.
     """
     names = {index: name for name, index in LAYER_INDICES.items()}
     features = {}
@@ -51,26 +52,21 @@ def extract_features(image_tensor, model):
     return features
 
 
-def gram_matrix(feature_tensor):
-    """Channel correlation matrix, divided by C * H * W."""
-    _, channels, height, width = feature_tensor.shape
-    flattened = feature_tensor.reshape(channels, height * width)
-    return flattened @ flattened.transpose(0, 1) / (channels * height * width)
-
-
 def main():
     from PIL import Image
 
     from preprocessing import preprocess_image
 
-    image = Image.new("RGB", (256, 256), (180, 90, 40))
-    tensor = preprocess_image(image, image_size=256)
+    image = Image.new("RGB", (128, 128), (180, 90, 40))
+    tensor = preprocess_image(image, image_size=128)
     model = load_feature_extractor()
 
     if model.training:
         raise SystemExit("feature extractor must be in eval mode")
     if any(param.requires_grad for param in model.parameters()):
         raise SystemExit("VGG19 parameters must be frozen")
+    if not isinstance(model[20], nn.ReLU):
+        raise SystemExit("index 20 must be relu4_1")
 
     features = extract_features(tensor, model)
     if set(features) != set(LAYER_INDICES):
@@ -81,11 +77,6 @@ def main():
         print(f"{name} {shape}")
         if shape != expected:
             raise SystemExit(f"{name} shape {shape} != {expected}")
-        gram_shape = tuple(gram_matrix(features[name]).shape)
-        print(f"{name} gram {gram_shape}")
-        expected_gram = (expected[1], expected[1])
-        if gram_shape != expected_gram:
-            raise SystemExit(f"{name} gram {gram_shape} != {expected_gram}")
 
 
 if __name__ == "__main__":
