@@ -62,6 +62,16 @@ def test_finish_result_matches_content_proportions():
     assert abs(result.size[0] / result.size[1] - 16 / 9) < 0.01
 
 
+def test_finish_result_restores_content_edges():
+    content = Image.new("RGB", (384, 384), (0, 0, 0))
+    content.paste((255, 255, 255), (192, 0, 384, 384))
+    raw = Image.new("RGB", (128, 128), (128, 128, 128))
+
+    result, _ = it.finish_result(raw, content, mix=1)
+
+    assert result.getpixel((190, 192))[0] < result.getpixel((194, 192))[0]
+
+
 def test_zero_mix_returns_the_original_photo():
     content = Image.new("RGB", (800, 600), (10, 120, 200))
     raw = Image.new("RGB", (128, 128), (200, 120, 10))
@@ -81,6 +91,49 @@ def test_palette_finds_distinct_colours():
     assert len(set(palette)) == len(palette)
     assert all(len(colour) == 7 and colour.startswith("#")
                for colour in palette)
+
+
+def test_image_data_uri_round_trips():
+    image = Image.new("RGB", (18, 12), (90, 120, 210))
+
+    decoded = it.image_from_data_uri(it.to_data_uri(image, fmt="PNG"))
+
+    assert decoded.size == image.size
+    assert decoded.getpixel((4, 4)) == image.getpixel((4, 4))
+
+
+def test_palette_story_reports_shared_signature_colours():
+    story = it.palette_story(
+        ["#112233", "#DDEEFF"],
+        ["#112233", "#DDEEFF"],
+    )
+
+    assert "echoes 2 of 2 signature colours" in story
+    assert "#112233 -> #112233" in story
+
+
+def test_difference_map_highlights_changed_pixels():
+    original = Image.new("RGB", (20, 20), (20, 30, 40))
+    result = original.copy()
+    result.paste((230, 220, 10), (8, 8, 12, 12))
+
+    difference = it.difference_map(original, result)
+
+    assert difference.size == original.size
+    assert difference.getpixel((10, 10)) != difference.getpixel((2, 2))
+
+
+def test_showcase_export_contains_both_images_and_palette():
+    original = Image.new("RGB", (40, 30), (20, 30, 40))
+    result = Image.new("RGB", (40, 30), (230, 220, 10))
+
+    showcase = it.create_showcase_image(
+        original, result, ["#E6DC0A", "#14202A"], strength=65
+    )
+
+    assert showcase.size == (1400, 960)
+    assert showcase.mode == "RGB"
+    assert showcase.getpixel((600, 300)) != showcase.getpixel((900, 300))
 
 
 TESTS = [value for name, value in sorted(

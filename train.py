@@ -9,11 +9,21 @@ from torch.utils.data import DataLoader
 from adain import adain_target
 from dataset import StyleTransferDataset
 from feature_extraction import extract_features, load_feature_extractor
-from losses import DEFAULT_LAMBDA, content_loss, style_loss, total_loss
+from losses import (
+    DEFAULT_LAMBDA,
+    DEFAULT_LAMBDA_EDGE,
+    content_loss,
+    edge_loss,
+    style_loss,
+    total_loss,
+)
 from model import Decoder
 from style_transfer import decode_to_normalized
 
-def training_step(decoder, extractor, optimizer, content, style, lambda_style):
+def training_step(
+    decoder, extractor, optimizer, content, style, lambda_style,
+    lambda_edge=DEFAULT_LAMBDA_EDGE,
+):
     """One Adam update of the decoder. VGG19 weights are not stepped."""
     decoder.train()
     extractor.eval()
@@ -28,18 +38,22 @@ def training_step(decoder, extractor, optimizer, content, style, lambda_style):
     generated_features = extract_features(generated, extractor)
     c_loss = content_loss(generated_features, target)
     s_loss = style_loss(generated_features, style_features)
-    loss = total_loss(c_loss, s_loss, lambda_style)
+    e_loss = edge_loss(generated, content)
+    loss = total_loss(c_loss, s_loss, lambda_style) + lambda_edge * e_loss
 
     if not loss.requires_grad:
         raise RuntimeError("loss has no gradient; the decoder is not receiving it")
 
     loss.backward()
     optimizer.step()
-    return c_loss.detach(), s_loss.detach(), loss.detach()
+    return c_loss.detach(), s_loss.detach(), e_loss.detach(), loss.detach()
 
 
 @torch.no_grad()
-def evaluate(decoder, extractor, loader, lambda_style, device, max_steps=0):
+def evaluate(
+    decoder, extractor, loader, lambda_style, device, max_steps=0,
+    lambda_edge=DEFAULT_LAMBDA_EDGE,
+):
     decoder.eval()
     totals = []
     for step, (content, style) in enumerate(loader, start=1):
@@ -52,7 +66,10 @@ def evaluate(decoder, extractor, loader, lambda_style, device, max_steps=0):
         generated_features = extract_features(generated, extractor)
         c_loss = content_loss(generated_features, target)
         s_loss = style_loss(generated_features, style_features)
-        totals.append(total_loss(c_loss, s_loss, lambda_style).item())
+        e_loss = edge_loss(generated, content)
+        totals.append(
+            (total_loss(c_loss, s_loss, lambda_style) + lambda_edge * e_loss).item()
+        )
         if max_steps and step >= max_steps:
             break
     if not totals:
@@ -60,26 +77,36 @@ def evaluate(decoder, extractor, loader, lambda_style, device, max_steps=0):
     return sum(totals) / len(totals)
 
 
-def run_epoch(decoder, extractor, optimizer, loader, lambda_style, device, max_steps=0):
+def run_epoch(
+    decoder, extractor, optimizer, loader, lambda_style, device, max_steps=0,
+    lambda_edge=DEFAULT_LAMBDA_EDGE,
+):
     content_sum = 0.0
     style_sum = 0.0
+    edge_sum = 0.0
     total_sum = 0.0
     steps = 0
     for content, style in loader:
         content = content.to(device)
         style = style.to(device)
-        c_loss, s_loss, loss = training_step(
-            decoder, extractor, optimizer, content, style, lambda_style
+        c_loss, s_loss, e_loss, loss = training_step(
+            decoder, extractor, optimizer, content, style, lambda_style, lambda_edge
         )
         content_sum += c_loss.item()
         style_sum += s_loss.item()
+        edge_sum += e_loss.item()
         total_sum += loss.item()
         steps += 1
         if max_steps and steps >= max_steps:
             break
     if steps == 0:
         raise RuntimeError("the data loader produced no batches")
-    return content_sum / steps, style_sum / steps, total_sum / steps
+    return (
+        content_sum / steps,
+        style_sum / steps,
+        edge_sum / steps,
+        total_sum / steps,
+    )
 
 
 def save_checkpoint(decoder, path):
@@ -130,24 +157,28 @@ def train(args):
 
     best_score = None
     for epoch in range(start_epoch, args.epochs + 1):
-        content_value, style_value, total_value = run_epoch(
-            decoder, extractor, optimizer, train_loader, args.lambda_style, device, args.max_steps
+        content_value, style_value, edge_value, total_value = run_epoch(
+            decoder, extractor, optimizer, train_loader, args.lambda_style, device,
+            args.max_steps, args.lambda_edge,
         )
         record = {
             "epoch": epoch,
             "content": content_value,
             "style": style_value,
+            "edge": edge_value,
             "total": total_value,
         }
         if val_loader is not None:
             record["val_total"] = evaluate(
-                decoder, extractor, val_loader, args.lambda_style, device, args.max_steps
+                decoder, extractor, val_loader, args.lambda_style, device,
+                args.max_steps, args.lambda_edge,
             )
         history.append(record)
         score = record.get("val_total", total_value)
         print(
             f"epoch {epoch}/{args.epochs}  total {total_value:.4f}  "
-            f"content {content_value:.4f}  style {style_value:.6f}"
+            f"content {content_value:.4f}  style {style_value:.6f}  "
+            f"edge {edge_value:.6f}"
         )
 
         epoch_path = checkpoint_dir / f"decoder_epoch_{epoch}.pth"
@@ -175,6 +206,7 @@ def parse_args(argv=None):
     parser.add_argument("--image-size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--lambda-style", type=float, default=DEFAULT_LAMBDA)
+    parser.add_argument("--lambda-edge", type=float, default=DEFAULT_LAMBDA_EDGE)
     parser.add_argument("--checkpoint-dir", default="checkpoints")
     parser.add_argument("--drive-dir", default="")
     parser.add_argument("--resume", action="store_true")

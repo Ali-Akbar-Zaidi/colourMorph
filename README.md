@@ -24,8 +24,9 @@ Training happens before the app is used. The app does not run an optimization lo
 2. **Extract features.** Frozen VGG19 returns `relu1_1`, `relu2_1`, `relu3_1`, and `relu4_1`. The encoder stops at `relu4_1`.
 3. **AdaIN.** The `relu4_1` content features are shifted and scaled so each channel matches the style features' mean and standard deviation. Style strength `alpha` blends that result with the original content features.
 4. **Decode.** The trained decoder maps the 512-channel feature map back to a 3-channel image of the same height and width.
-5. **Train the decoder only.** Content loss compares `relu4_1` of the generated image with the AdaIN tensor. Style loss compares channel means and standard deviations from `relu1_1` through `relu4_1`. Adam updates the decoder. VGG19 stays frozen.
-6. **Display and save.** The app loads `checkpoints/best_decoder.pth`, shows the result, and offers it for download.
+5. **Train the decoder only.** Content loss compares `relu4_1` of the generated image with the AdaIN tensor. Style loss compares channel means and standard deviations from `relu1_1` through `relu4_1`. An edge loss compares generated-image gradients with the content-image gradients so the decoder learns to retain structural edges. Adam updates the decoder. VGG19 stays frozen.
+6. **Restore detail and display.** The app automatically adds a fixed 100% high-pass residual from the content image's luminance, then blends the generated result with the original according to Artistic Influence. This is inference-time post-processing, not a trained model behavior.
+7. **Display and save.** The app loads `checkpoints/best_decoder.pth`, shows the result, and offers it for download.
 
 ---
 
@@ -92,12 +93,17 @@ Put about 300–500 COCO photographs in `data/content/train` and 300–500 WikiA
 
 ```bash
 python train.py --epochs 5 --batch-size 4
-streamlit run app.py
+streamlit run app_new.py
 ```
 
 `train.py` saves `checkpoints/best_decoder.pth` and `checkpoints/loss_log.json`. Pass `--drive-dir` on Colab to copy both to Google Drive, and `--resume` to continue from `checkpoints/last.pth`. The app needs the checkpoint file before Generate is enabled.
+The decoder now trains with an edge-consistency loss by default (`--lambda-edge 1.0`). For a higher-resolution experiment, try `--image-size 256` with a smaller batch size if memory is limited, and save it to a separate checkpoint directory for comparison.
 
 Upload a content image and a style image (JPG, JPEG or PNG), set the style strength, generate the result, and download it.
+
+The app also includes Gentle, Balanced and Bold influence presets; wipe, side-by-side, difference-map and three-image Muse Story comparisons; and a Variation Lab that prepares three influence levels from one model render. Palette Story explains colour echoes between the artwork and result, and Showcase Export creates a shareable before-and-after card. Recent results stay in a small gallery for the current Streamlit session only. Reveal and interface animations honor the operating system's reduced-motion preference.
+
+The **Try the sample images** button uses `sample_images/content/building.jpg` and `sample_images/style/artistic.jpg` by default.
 
 ### Use the pipeline from Python
 
@@ -106,10 +112,10 @@ from PIL import Image
 from preprocessing import preprocess_image, denormalize_image
 from style_transfer import transfer_style
 
-content = preprocess_image(Image.open("sample_images/content/city.jpg"), image_size=128)
-style = preprocess_image(Image.open("sample_images/style/starry.jpg"), image_size=128)
+content = preprocess_image(Image.open("sample_images/content/building.jpg"), image_size=128)
+style = preprocess_image(Image.open("sample_images/style/artistic.jpg"), image_size=128)
 output = transfer_style(content, style, alpha=1.0)
-denormalize_image(output).save("outputs/city_starry.png")
+denormalize_image(output).save("outputs/building_artistic.png")
 ```
 
 ---
@@ -124,9 +130,10 @@ denormalize_image(output).save("outputs/city_starry.png")
 | Learning rate | 0.0001 |
 | Epochs | 5 |
 | Style loss weight `lambda` | 10 |
+| Edge loss weight `lambda_edge` | 1 |
 | Trainable parameters | Decoder only |
 
-`alpha` in the app is the style strength from 0 to 1. It is not the content-loss weight. `1` uses the full AdaIN features. `0` keeps the content features.
+The app applies full AdaIN style transfer, then uses Artistic Influence to blend the generated image with the original photo once. At 0%, the original is unchanged; at 100%, the full generated result is shown. This avoids attenuating the style twice. Detail retention is encouraged in the trained decoder with the edge loss, and a fixed high-pass residual is also applied automatically at inference. The automatic post-processing is documented here and is not exposed as a UI slider.
 
 ---
 
@@ -142,7 +149,7 @@ All modules depend on these agreements. Do not change them without telling the t
 | Encoder | `vgg19.features[:21]`, frozen, in-place ReLU replaced |
 | AdaIN | Per-channel mean and std at `relu4_1`, then blend with `alpha` |
 | Decoder | 512 channels in, 3 channels out, three nearest ×2 upsamples |
-| Loss | `content + 10 * style`. Style uses mean and std, not a Gram matrix |
+| Loss | `content + 10 * style + lambda_edge * edge`. Style uses mean and std, not a Gram matrix |
 | Checkpoint | `checkpoints/best_decoder.pth` is the decoder `state_dict` |
 | Device | CUDA when available, otherwise CPU |
 
@@ -160,13 +167,16 @@ Expected output:
 passed test_adain_matches_style_statistics
 passed test_decoder_output_shape
 passed test_losses_use_weights
+passed test_edge_loss_matches_content_structure
 passed test_decoder_learns_and_vgg_stays_fixed
 passed test_transfer_style_output
 passed test_dataset_reads_unpaired_folders
 all tests passed
 ```
 
-The tests check AdaIN statistics, the decoder shape, the weighted loss, that a training step updates the decoder and not VGG19, one-pass inference, and the unpaired dataset loader.
+The tests check AdaIN statistics, decoder shape, weighted content/style loss, edge loss, that a training step updates the decoder and not VGG19, one-pass inference, and the unpaired dataset loader.
+
+The comparison view can be checked separately with `python test_ui_parts.py`.
 
 ---
 

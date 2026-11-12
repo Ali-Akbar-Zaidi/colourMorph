@@ -120,6 +120,18 @@ def result_facts(size_text: str, strength: int, detail_label: str, seconds: floa
     return f'<dl class="cm-facts">{body}</dl>'
 
 
+def difference_map_note() -> str:
+    return """
+<div class="cm-map-note" role="note">
+  <span class="cm-map-note-mark" aria-hidden="true">✦</span>
+  <div>
+    <strong>See where the image changed</strong>
+    <p>Brighter amber areas indicate greater differences between the images, while dark navy areas indicate little or no difference.</p>
+  </div>
+</div>
+"""
+
+
 def how_it_works(animate: bool = False) -> str:
     steps = [
         (
@@ -178,13 +190,155 @@ def how_it_works(animate: bool = False) -> str:
 """
 
 
+def _side_by_side_comparison(
+    before_uri: str,
+    after_uri: str,
+    dark_mode: bool,
+    zoom: int,
+) -> str:
+    theme = (
+        "--cmp-bg:#191b28;--cmp-ink:#f2f1f8;--cmp-outline:rgba(225,228,255,.2)"
+        if dark_mode
+        else "--cmp-bg:#E8ECF7;--cmp-ink:#14183A;--cmp-outline:rgba(20,24,58,.12)"
+    )
+    stage = """
+<div class="stage side-stage">
+  <figure><img class="compare-image" src="__BEFORE__" alt="Original image">
+    <figcaption>Original</figcaption></figure>
+  <figure><img class="compare-image" src="__AFTER__" alt="Stylized result">
+    <figcaption>ColourMorph</figcaption></figure>
+</div>
+"""
+
+    document = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{--cmp-bg:#E8ECF7;--cmp-ink:#14183A;--cmp-outline:rgba(20,24,58,.12);--zoom:__ZOOM__;__THEME__}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%;background:transparent;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+.viewer{position:relative;height:100%;min-height:300px;overflow:hidden;border-radius:18px;
+  background:var(--cmp-bg);outline:1px solid var(--cmp-outline);animation:arrive .55s cubic-bezier(.2,.75,.25,1) both}
+.stage{position:absolute;inset:0;overflow:hidden}
+.compare-image{width:100%;height:100%;object-fit:contain;display:block;transform:scale(var(--zoom));
+  transition:transform .28s ease,opacity .28s ease}
+.side-stage{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--cmp-outline)}
+.side-stage figure{min-width:0;height:100%;display:flex;flex-direction:column;background:var(--cmp-bg);overflow:hidden}
+.side-stage img{height:calc(100% - 34px)}
+.side-stage figcaption{height:34px;display:grid;place-items:center;color:var(--cmp-ink);font-size:13px;font-weight:600}
+@keyframes arrive{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){.viewer,.compare-image{animation:none!important;transition:none!important}}
+</style></head><body>
+<div class="viewer" role="region" aria-label="Side-by-side image comparison">
+__STAGE__
+ </div></body></html>"""
+    return (
+        document.replace("__STAGE__", stage)
+        .replace("__THEME__", theme)
+        .replace("__ZOOM__", f"{max(100, min(200, int(zoom))) / 100:.2f}")
+        .replace("__BEFORE__", before_uri)
+        .replace("__AFTER__", after_uri)
+    )
+
+
+def _difference_comparison(
+    difference_uri: str,
+    dark_mode: bool,
+    zoom: int,
+) -> str:
+    theme = (
+        "--cmp-bg:#191b28;--cmp-ink:#f2f1f8;--cmp-outline:rgba(225,228,255,.2)"
+        if dark_mode
+        else "--cmp-bg:#E8ECF7;--cmp-ink:#14183A;--cmp-outline:rgba(20,24,58,.12)"
+    )
+    document = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{--cmp-bg:#E8ECF7;--cmp-ink:#14183A;--cmp-outline:rgba(20,24,58,.12);--zoom:__ZOOM__;__THEME__}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%;background:transparent;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+.viewer{position:relative;height:100%;min-height:300px;overflow:hidden;border-radius:18px;
+  background:var(--cmp-bg);outline:1px solid var(--cmp-outline);animation:arrive .55s cubic-bezier(.2,.75,.25,1) both}
+figure{position:absolute;inset:0;display:flex;flex-direction:column;overflow:hidden}
+.difference-image{width:100%;height:calc(100% - 38px);object-fit:contain;display:block;transform:scale(var(--zoom));
+  transition:transform .28s ease}
+figcaption{height:38px;display:grid;place-items:center;color:var(--cmp-ink);font-size:13px;font-weight:600}
+@keyframes arrive{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){.viewer,.difference-image{animation:none!important;transition:none!important}}
+</style></head><body>
+<div class="viewer" role="region" aria-label="Difference map image comparison">
+  <figure><img class="difference-image" src="__DIFFERENCE__" alt="Map of pixel changes">
+    <figcaption>Brighter areas indicate greater differences between the images</figcaption></figure>
+</div></body></html>"""
+    return (
+        document.replace("__THEME__", theme)
+        .replace("__ZOOM__", f"{max(100, min(200, int(zoom))) / 100:.2f}")
+        .replace("__DIFFERENCE__", difference_uri)
+    )
+
+
+def _muse_story_comparison(
+    before_uri: str,
+    style_uri: str,
+    after_uri: str,
+    dark_mode: bool,
+    zoom: int,
+) -> str:
+    theme = (
+        "--cmp-bg:#191b28;--cmp-ink:#f2f1f8;--cmp-outline:rgba(225,228,255,.2)"
+        if dark_mode
+        else "--cmp-bg:#E8ECF7;--cmp-ink:#14183A;--cmp-outline:rgba(20,24,58,.12)"
+    )
+    stage = """
+<div class="stage story-stage">
+  <figure><img class="compare-image" src="__BEFORE__" alt="Original photo">
+    <figcaption>Original</figcaption></figure>
+  <figure><img class="compare-image" src="__STYLE__" alt="Artistic muse">
+    <figcaption>Muse</figcaption></figure>
+  <figure><img class="compare-image" src="__AFTER__" alt="ColourMorph result">
+    <figcaption>ColourMorph</figcaption></figure>
+</div>
+"""
+    document = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{--cmp-bg:#E8ECF7;--cmp-ink:#14183A;--cmp-outline:rgba(20,24,58,.12);--zoom:__ZOOM__;__THEME__}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%;background:transparent;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+.viewer{position:relative;height:100%;min-height:300px;overflow:hidden;border-radius:18px;
+  background:var(--cmp-bg);outline:1px solid var(--cmp-outline);animation:arrive .55s cubic-bezier(.2,.75,.25,1) both}
+.stage{position:absolute;inset:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:1px;background:var(--cmp-outline)}
+figure{min-width:0;height:100%;display:flex;flex-direction:column;background:var(--cmp-bg);overflow:hidden}
+.compare-image{width:100%;height:calc(100% - 34px);object-fit:contain;display:block;transform:scale(var(--zoom));
+  transition:transform .28s ease}
+figcaption{height:34px;display:grid;place-items:center;color:var(--cmp-ink);font-size:13px;font-weight:600}
+@keyframes arrive{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){.viewer,.compare-image{animation:none!important;transition:none!important}}
+</style></head><body>
+<div class="viewer" role="region" aria-label="Muse story image comparison">
+__STAGE__
+</div></body></html>"""
+    return (
+        document.replace("__STAGE__", stage)
+        .replace("__THEME__", theme)
+        .replace("__ZOOM__", f"{max(100, min(200, int(zoom))) / 100:.2f}")
+        .replace("__BEFORE__", before_uri)
+        .replace("__STYLE__", style_uri)
+        .replace("__AFTER__", after_uri)
+    )
+
+
 def compare_slider(
     before_uri: str,
     after_uri: str,
     height: int = 520,
     dark_mode: bool = False,
+    mode: str = "Wipe",
+    zoom: int = 100,
+    difference_uri: str | None = None,
+    style_uri: str | None = None,
 ) -> str:
-    """A self-contained drag-to-reveal comparison. Runs inside an iframe."""
+    """Build a self-contained, accessible image comparison for a Streamlit iframe."""
     theme = (
         "--cmp-bg:#191b28;--cmp-ink:#f2f1f8;--cmp-outline:rgba(225,228,255,.2);"
         "--cmp-knob:#292c3d;--cmp-chip:rgba(13,14,22,.8)"
@@ -192,18 +346,32 @@ def compare_slider(
         else "--cmp-bg:#E8ECF7;--cmp-ink:#14183A;--cmp-outline:rgba(20,24,58,.12);"
         "--cmp-knob:#fff;--cmp-chip:rgba(20,24,58,.72)"
     )
+    if mode == "Side-by-side":
+        return _side_by_side_comparison(before_uri, after_uri, dark_mode, zoom)
+    if mode == "Difference map":
+        if difference_uri is None:
+            raise ValueError("A difference image is required for Difference map mode.")
+        return _difference_comparison(difference_uri, dark_mode, zoom)
+    if mode == "Muse Story":
+        if style_uri is None:
+            raise ValueError("A style image is required for Muse Story mode.")
+        return _muse_story_comparison(
+            before_uri, style_uri, after_uri, dark_mode, zoom
+        )
+    if mode != "Wipe":
+        mode = "Wipe"
     return """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-:root{--pos:50%;--accent:#3B4BDB;__THEME__}
+:root{--pos:50%;--accent:#3B4BDB;--zoom:__ZOOM__;__THEME__}
 *{box-sizing:border-box;margin:0}
 html,body{height:100%;background:transparent;font-family:"Hanken Grotesk",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 #cmp{position:relative;height:100%;border-radius:18px;overflow:hidden;background:var(--cmp-bg);
   touch-action:pan-y;user-select:none;-webkit-user-select:none;cursor:ew-resize;
   outline:1px solid var(--cmp-outline);outline-offset:-1px}
-.bg{position:absolute;inset:-8%;width:116%;height:116%;object-fit:cover;filter:blur(28px) saturate(1.1);opacity:.55}
 .layer{position:absolute;inset:0}
-.layer img{width:100%;height:100%;object-fit:contain;display:block;-webkit-user-drag:none}
+.layer img{width:100%;height:100%;object-fit:contain;display:block;-webkit-user-drag:none;
+  transform:scale(var(--zoom));transition:transform .28s ease}
 #before{clip-path:inset(0 calc(100% - var(--pos)) 0 0)}
 #line{position:absolute;top:0;bottom:0;left:var(--pos);width:2px;margin-left:-1px;background:#fff;
   box-shadow:0 0 0 1px var(--cmp-outline)}
@@ -218,7 +386,6 @@ html,body{height:100%;background:transparent;font-family:"Hanken Grotesk",system
 </style></head><body>
 <div id="cmp" tabindex="0" role="slider" aria-label="Compare original and result"
      aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
-  <img class="bg" alt="" src="__AFTER__">
   <div class="layer"><img alt="Result" src="__AFTER__"></div>
   <div class="layer" id="before"><img alt="Original" src="__BEFORE__"></div>
   <div id="line"></div>
@@ -255,4 +422,6 @@ html,body{height:100%;background:transparent;font-family:"Hanken Grotesk",system
     if(t<1)raf=requestAnimationFrame(tick);else raf=null;}
   setTimeout(function(){raf=requestAnimationFrame(tick);},250);
 })();
-</script></body></html>""".replace("__BEFORE__", before_uri).replace("__AFTER__", after_uri).replace("__THEME__", theme)
+</script></body></html>""".replace("__BEFORE__", before_uri).replace("__AFTER__", after_uri).replace(
+        "__THEME__", theme
+    ).replace("__ZOOM__", f"{max(100, min(200, int(zoom))) / 100:.2f}")

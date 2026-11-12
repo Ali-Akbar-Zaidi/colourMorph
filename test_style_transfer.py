@@ -7,7 +7,7 @@ from PIL import Image
 from adain import adaptive_instance_norm, mean_std
 from dataset import StyleTransferDataset
 from feature_extraction import CONTENT_LAYER, STYLE_LAYERS, load_feature_extractor
-from losses import content_loss, style_loss, total_loss
+from losses import content_loss, edge_loss, style_loss, total_loss
 from model import Decoder
 from preprocessing import IMAGENET_MEAN, IMAGENET_STD, preprocess_image
 from style_transfer import transfer_style
@@ -50,6 +50,15 @@ def test_losses_use_weights():
     assert content_loss(features, features[CONTENT_LAYER]).item() == 0
     assert style_loss(features, features).item() == 0
     assert total_loss(torch.tensor(2.0), torch.tensor(3.0), 10.0).item() == 32.0
+
+
+def test_edge_loss_matches_content_structure():
+    content = torch.zeros(1, 3, 16, 16)
+    generated = content.clone()
+    generated[:, :, 8:, :] = 1.0
+
+    assert edge_loss(content, content).item() == 0.0
+    assert edge_loss(generated, content).item() > 0.0
 
 
 def test_decoder_learns_and_vgg_stays_fixed():
@@ -110,6 +119,7 @@ if __name__ == "__main__":
         test_adain_matches_style_statistics,
         test_decoder_output_shape,
         test_losses_use_weights,
+        test_edge_loss_matches_content_structure,
         test_decoder_learns_and_vgg_stays_fixed,
         test_transfer_style_output,
         test_dataset_reads_unpaired_folders,
